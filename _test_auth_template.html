@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Test modułu logowania BiegStart</title>
+</head>
+<body>
+  <pre id="out" style="font:12px/1.5 monospace;white-space:pre-wrap"></pre>
+
+  <!-- Źródło auth.js wklejane przez generator _run_test.py
+       (potrzebne do symulacji „odświeżenia strony”). -->
+  <script id="authSource" type="text/plain">/*__AUTH_SOURCE__*/</script>
+
+  <script>
+    window.__TEST_ENV = "browser";
+    window.__AUTH_SOURCE = document.getElementById("authSource").textContent;
+  </script>
+
+  <!-- Prawdziwy moduł logowania + testy integracyjne -->
+  <script src="auth.js"></script>
+  <script src="_test_auth.js"></script>
+</body>
+</html>

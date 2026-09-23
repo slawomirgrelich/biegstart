@@ -1,0 +1,71 @@
+[27728:22208:0922/183809.291:INFO:components\enterprise\browser\controller\chrome_browser_cloud_management_controller.cc:241] No machine level policy manager exists.
+[27728:22208:0922/183810.034:INFO:CONSOLE:482] "  OK   auth.js eksportuje BiegStartAuth
+  OK   walidacja -> REQUIRED   [otrzymano: REQUIRED]
+  OK   walidacja -> INVALID_EMAIL   [otrzymano: INVALID_EMAIL]
+  OK   walidacja -> WEAK_PASSWORD   [otrzymano: WEAK_PASSWORD]
+  OK   rejestracja zwraca u┼╝ytkownika
+  OK   rejestracja ustawia displayName
+  OK   zalogowano po rejestracji
+  OK   duplikat e-maila -> EMAIL_EXISTS   [otrzymano: EMAIL_EXISTS]
+  OK   po wylogowaniu brak sesji
+  OK   logout zamyka bramk─Ö
+  OK   z┼ée has┼éo -> WRONG_PASSWORD   [otrzymano: WRONG_PASSWORD]
+  OK   brak konta -> USER_NOT_FOUND   [otrzymano: USER_NOT_FOUND]
+  OK   logowanie poprawnym has┼éem dzia┼éa
+  OK   profil zapisany pod kluczem per u┼╝ytkownik   [biegstart_data_u_mucwebem_33jp3t]
+  OK   post─Öp trening├│w zapisany
+  OK   odznaki zapisane
+  OK   trasy zapisane
+  OK   konto go┼Ťcia ma isGuest=true
+  OK   id go┼Ťcia = 'guest'
+  OK   go┼Ť─ç ma pusty w┼éasny post─Öp (izolacja)
+  OK   go┼Ť─ç ma puste w┼éasne odznaki (izolacja)
+  OK   go┼Ť─ç zapisuje pod osobnym kluczem
+  OK   dane konta nie zosta┼éy nadpisane
+  OK   sesja go┼Ťcia odtworzona po od┼Ťwie┼╝eniu
+  OK   profil go┼Ťcia wczytany
+  OK   konto odtworzone po od┼Ťwie┼╝eniu
+  OK   post─Öp konta wczytany po od┼Ťwie┼╝eniu
+  OK   odznaki konta wczytane po od┼Ťwie┼╝eniu
+  OK   ensureProfileLoaded zwraca profil
+  OK   applyExternalUser loguje u┼╝ytkownika
+  OK   onChange powiadomi┼é o logowaniu   [["fb_uid_123"]]
+  OK   applyExternalUser(null) wylogowuje
+  OK   onChange powiadomi┼é o wylogowaniu   [["fb_uid_123",null]]
+  OK   kod auth/email-already-in-use -> authErrEmailExists   [otrzymano: authErrEmailExists]
+  OK   kod auth/wrong-password -> authErrWrongPassword   [otrzymano: authErrWrongPassword]
+  OK   kod auth/invalid-credential -> authErrWrongPassword   [otrzymano: authErrWrongPassword]
+  OK   kod auth/user-not-found -> authErrUserNotFound   [otrzymano: authErrUserNotFound]
+  OK   kod auth/weak-password -> authErrWeakPassword   [otrzymano: authErrWeakPassword]
+  OK   kod auth/invalid-email -> authErrInvalidEmail   [otrzymano: authErrInvalidEmail]
+  OK   kod auth/too-many-requests -> authErrTooManyRequests   [otrzymano: authErrTooManyRequests]
+  OK   kod auth/network-request-failed -> authErrNetwork   [otrzymano: authErrNetwork]
+  OK   kod auth/popup-closed-by-user -> authErrPopupClosed   [otrzymano: authErrPopupClosed]
+  OK   kod auth/popup-blocked -> authErrPopupBlocked   [otrzymano: authErrPopupBlocked]
+  OK   kod auth/operation-not-allowed -> authErrProviderDisabled   [otrzymano: authErrProviderDisabled]
+  OK   nieznany kod -> authErrGeneric
+  OK   brak obiektu b┼é─Ödu -> authErrGeneric
+  OK   rejestracja pokazuje pole nazwy
+  OK   tytu┼é w trybie rejestracji
+  OK   submit w trybie rejestracji
+  OK   logowanie ukrywa pole nazwy
+  OK   tytu┼é w trybie logowania
+  OK   submit w trybie logowania
+  OK   notka o localStorage (adapter lokalny)
+  OK   przycisk X widoczny dla zalogowanego
+  OK   go┼Ť─ç mo┼╝e zamkn─ů─ç bramk─Ö
+  OK   bramka zamkni─Öta dla go┼Ťcia
+  OK   klik zak┼éadki Rejestracja -> tryb register
+  OK   klik zak┼éadki Logowanie -> tryb login
+  OK   submit formularza loguje u┼╝ytkownika   [email: anna@example.com]
+  OK   brak komunikatu b┼é─Ödu po udanym logowaniu
+  OK   b┼é─Ödne has┼éo pokazuje komunikat   [authErrWrongPassword]
+  OK   brak sesji po nieudanym logowaniu
+  OK   przycisk 'Kontynuuj jako go┼Ť─ç' loguje jako go┼Ťcia
+  OK   loginWithGoogle (adapter lokalny) -> GOOGLE_UNAVAILABLE   [otrzymano: GOOGLE_UNAVAILABLE]
+  OK   przycisk Wyloguj ko┼äczy sesj─Ö
+
+================================================================
+WYNIK: 65/65 test├│w zaliczonych
+STATUS: SUCCESS
+================================================================", source: file:///C:/Projekty/bieganie-app/_test_auth.js (482)

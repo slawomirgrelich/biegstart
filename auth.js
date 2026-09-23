@@ -1,0 +1,846 @@
+/* =========================================================
+   BiegStartAuth — logowanie, rejestracja i profile użytkowników
+   ---------------------------------------------------------
+   Moduł dostarcza:
+     • rejestrację i logowanie (e-mail / hasło),
+     • tryb „Gość” (bez zakładania konta),
+     • sesję zapamiętaną w localStorage,
+     • izolację danych per użytkownik:
+         klucz localStorage = "biegstart_data_<USER_ID>"
+       (postęp treningów, statystyki, zapisane trasy, notatki).
+
+   Warstwa abstrakcji przygotowana pod przyszłą integrację z
+   Firebase Authentication + Cloud Firestore (patrz firebase-adapter.js).
+
+   Architektura:
+     AuthAdapter   — operacje na koncie (rejestracja, logowanie, gość,
+                     wylogowanie, odczyt sesji).
+     DataAdapter   — odczyt/zapis danych profilu.
+     BiegStartAuth — usługa spajająca adaptery i emitująca zdarzenia
+                     o zmianie zalogowanego użytkownika.
+
+   Podmiana backendu na Firebase:
+     BiegStartAuth.configure({ authAdapter, dataAdapter })
+   ========================================================= */
+(function (global) {
+  "use strict";
+
+  /* ---------- KLUCZE LOCALSTORAGE ---------- */
+  const USERS_KEY = "biegstart-users-v1"; // rejestr kont lokalnych
+  const SESSION_KEY = "biegstart-session-v1"; // aktywna sesja
+  const DATA_PREFIX = "biegstart_data_"; // biegstart_data_<USER_ID>
+  const GUEST_ID = "guest"; // identyfikator profilu gościa
+  const PROFILE_VERSION = 1;
+  const MIN_PASSWORD_LENGTH = 6;
+
+  const ERROR_KEYS = {
+    REQUIRED: "authErrRequired",
+    INVALID_EMAIL: "authErrInvalidEmail",
+    EMAIL_EXISTS: "authErrEmailExists",
+    USER_NOT_FOUND: "authErrUserNotFound",
+    WRONG_PASSWORD: "authErrWrongPassword",
+    WEAK_PASSWORD: "authErrWeakPassword",
+    TOO_MANY_REQUESTS: "authErrTooManyRequests",
+    NETWORK: "authErrNetwork",
+    POPUP_CLOSED: "authErrPopupClosed",
+    POPUP_BLOCKED: "authErrPopupBlocked",
+    OPERATION_NOT_ALLOWED: "authErrProviderDisabled",
+    GOOGLE_UNAVAILABLE: "authErrProviderDisabled",
+    GENERIC: "authErrGeneric",
+  };
+
+  /* Kody błędów Firebase (compat) → wewnętrzne kody modułu.
+     Dzięki temu UI pokazuje ten sam, przetłumaczony komunikat
+     niezależnie od tego, czy działa adapter lokalny czy Firebase. */
+  const FIREBASE_ERROR_MAP = {
+    "auth/email-already-in-use": "EMAIL_EXISTS",
+    "auth/user-not-found": "USER_NOT_FOUND",
+    "auth/wrong-password": "WRONG_PASSWORD",
+    "auth/invalid-credential": "WRONG_PASSWORD",
+    "auth/invalid-login-credentials": "WRONG_PASSWORD",
+    "auth/weak-password": "WEAK_PASSWORD",
+    "auth/invalid-email": "INVALID_EMAIL",
+    "auth/missing-password": "REQUIRED",
+    "auth/internal-error": "GENERIC",
+    "auth/missing-email": "REQUIRED",
+    "auth/too-many-requests": "TOO_MANY_REQUESTS",
+    "auth/network-request-failed": "NETWORK",
+    "auth/popup-closed-by-user": "POPUP_CLOSED",
+    "auth/cancelled-popup-request": "POPUP_CLOSED",
+    "auth/popup-blocked": "POPUP_BLOCKED",
+    "auth/operation-not-allowed": "OPERATION_NOT_ALLOWED",
+    "auth/admin-restricted-operation": "OPERATION_NOT_ALLOWED",
+    "auth/account-exists-with-different-credential": "EMAIL_EXISTS",
+    "auth/requires-recent-login": "GENERIC",
+  };
+
+  /* Tłumaczy błąd dowolnego adaptera na wewnętrzny kod modułu. */
+  function normalizeError(err) {
+    if (!err) return "GENERIC";
+    const raw = String(err.code || err.message || "").trim();
+    if (!raw) return "GENERIC";
+    if (FIREBASE_ERROR_MAP[raw]) return FIREBASE_ERROR_MAP[raw];
+    // Kody lokalne (np. "WRONG_PASSWORD") przekazujemy bez zmian.
+    if (Object.prototype.hasOwnProperty.call(ERROR_KEYS, raw)) return raw;
+    return "GENERIC";
+  }
+
+  /* =========================================================
+     POMOCNICZE
+     ========================================================= */
+  function nowISO() {
+    return new Date().toISOString();
+  }
+
+  function readJSON(key, fallback) {
+    try {
+      const raw = global.localStorage.getItem(key);
+      if (raw === null || raw === undefined) return fallback;
+      const parsed = JSON.parse(raw);
+      return parsed === null || parsed === undefined ? fallback : parsed;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function writeJSON(key, value) {
+    try {
+      global.localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function removeKey(key) {
+    try {
+      global.localStorage.removeItem(key);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function makeId() {
+    return (
+      "u_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8)
+    );
+  }
+
+  function authError(code) {
+    const err = new Error(code);
+    err.code = code;
+    return err;
+  }
+
+  function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || "").trim());
+  }
+
+  /* Hash hasła (SHA-256 przez Web Crypto).
+     UWAGA: to zabezpieczenie wyłącznie lokalne/demonstracyjne —
+     w wersji produkcyjnej hasła obsługuje Firebase Authentication. */
+  async function hashPassword(password) {
+    const payload = String(password) + "::biegstart";
+    try {
+      if (global.crypto && global.crypto.subtle && global.TextEncoder) {
+        const bytes = new TextEncoder().encode(payload);
+        const buf = await global.crypto.subtle.digest("SHA-256", bytes);
+        return Array.from(new Uint8Array(buf))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+    } catch (e) {
+      /* poniżej fallback */
+    }
+    // Fallback (np. środowisko bez crypto.subtle) — prosty hash.
+    let h = 5381;
+    for (let i = 0; i < payload.length; i++) {
+      h = ((h << 5) + h + payload.charCodeAt(i)) >>> 0;
+    }
+    return "fb" + h.toString(16);
+  }
+
+  /* =========================================================
+     KSZTAŁT DANYCH PROFILU
+     ========================================================= */
+  function defaultProfileData() {
+    return {
+      version: PROFILE_VERSION,
+      updatedAt: null,
+      state: {
+        completed: [],
+        lastDoneDate: null,
+        notes: {},
+        badges: [],
+        timerUsed: false,
+        mapUsed: false,
+      },
+      routes: [],
+    };
+  }
+
+  function normalizeProfileData(raw) {
+    const out = defaultProfileData();
+    if (!raw || typeof raw !== "object") return out;
+
+    if (raw.state && typeof raw.state === "object") {
+      const s = raw.state;
+      if (Array.isArray(s.completed)) {
+        out.state.completed = s.completed.filter((i) => Number.isInteger(i));
+      }
+      if (s.lastDoneDate) out.state.lastDoneDate = s.lastDoneDate;
+      if (s.notes && typeof s.notes === "object") out.state.notes = s.notes;
+      if (Array.isArray(s.badges)) {
+        out.state.badges = s.badges.filter((b) => typeof b === "string");
+      }
+      out.state.timerUsed = !!s.timerUsed;
+      out.state.mapUsed = !!s.mapUsed;
+    }
+    if (Array.isArray(raw.routes)) out.routes = raw.routes;
+    if (raw.updatedAt) out.updatedAt = raw.updatedAt;
+    return out;
+  }
+
+  /* =========================================================
+     ADAPTER LOKALNY — KONTA (localStorage)
+     ========================================================= */
+  const LocalAuthAdapter = {
+    id: "local",
+
+    async signUp(email, password, displayName) {
+      const normalized = String(email || "").trim().toLowerCase();
+      let users = readJSON(USERS_KEY, []);
+      if (!Array.isArray(users)) users = [];
+      if (users.some((u) => u.email === normalized)) {
+        throw authError("EMAIL_EXISTS");
+      }
+
+      const user = {
+        id: makeId(),
+        email: normalized,
+        displayName: displayName && displayName.trim() ? displayName.trim() : normalized,
+        isGuest: false,
+        createdAt: nowISO(),
+      };
+
+      users.push(
+        Object.assign({}, user, { passwordHash: await hashPassword(password) })
+      );
+      writeJSON(USERS_KEY, users);
+      return user;
+    },
+
+    async signIn(email, password) {
+      const normalized = String(email || "").trim().toLowerCase();
+      const users = readJSON(USERS_KEY, []);
+      const found = Array.isArray(users)
+        ? users.find((u) => u.email === normalized)
+        : null;
+      if (!found) throw authError("USER_NOT_FOUND");
+
+      const hash = await hashPassword(password);
+      if (found.passwordHash !== hash) throw authError("WRONG_PASSWORD");
+
+      return {
+        id: found.id,
+        email: found.email,
+        displayName: found.displayName || found.email,
+        isGuest: false,
+        createdAt: found.createdAt,
+      };
+    },
+
+    async signInAsGuest() {
+      return {
+        id: GUEST_ID,
+        email: null,
+        displayName: null,
+        isGuest: true,
+        createdAt: nowISO(),
+      };
+    },
+
+    /* Adapter lokalny nie obsługuje Google — UI ukrywa wtedy ten
+       przycisk. Rzucamy czytelny błąd na wypadek wywołania z kodu. */
+    async signInWithGoogle() {
+      throw authError("GOOGLE_UNAVAILABLE");
+    },
+
+    async signOut() {
+      /* sesję usuwa usługa */
+    },
+
+    readSession() {
+      const session = readJSON(SESSION_KEY, null);
+      return session && session.id ? session : null;
+    },
+  };
+
+  /* =========================================================
+     ADAPTER LOKALNY — DANE PROFILU (localStorage)
+     ========================================================= */
+  const LocalDataAdapter = {
+    id: "local",
+
+    keyFor(uid) {
+      return DATA_PREFIX + uid;
+    },
+
+    async load(uid) {
+      return normalizeProfileData(readJSON(DATA_PREFIX + uid, null));
+    },
+
+    async save(uid, data) {
+      const payload = normalizeProfileData(data);
+      payload.updatedAt = nowISO();
+      writeJSON(DATA_PREFIX + uid, payload);
+    },
+  };
+
+  /* =========================================================
+     USŁUGA
+     ========================================================= */
+  const service = {
+    /* adaptery — można je podmienić wywołaniem `configure` */
+    _auth: LocalAuthAdapter,
+    _data: LocalDataAdapter,
+
+    _user: null,
+    _profile: null,
+    _listeners: [],
+    _mode: "login", // login | register
+    _t: null, // translator (wstrzykiwany z app.js)
+
+    /* ---------- KONFIGURACJA ---------- */
+    configure(options) {
+      const opts = options || {};
+      if (opts.authAdapter) this._auth = opts.authAdapter;
+      if (opts.dataAdapter) this._data = opts.dataAdapter;
+      return this;
+    },
+
+    setTranslator(fn) {
+      this._t = typeof fn === "function" ? fn : null;
+      return this;
+    },
+
+    _tr(key) {
+      return this._t ? this._t(key) : key;
+    },
+
+    /* klucz localStorage dla danego profilu (np. biegstart_data_u_xxx) */
+    dataKeyFor(uid) {
+      if (this._data && typeof this._data.keyFor === "function") {
+        return this._data.keyFor(uid);
+      }
+      return DATA_PREFIX + uid;
+    },
+
+    /* ---------- STAN ---------- */
+    getCurrentUser() {
+      return this._user;
+    },
+
+    isLoggedIn() {
+      return !!this._user;
+    },
+
+    /* Synchroniczny dostęp do danych profilu (adapter lokalny).
+       Zapewnia kompatybilność z resztą aplikacji korzystającą z localStorage. */
+    getProfileSync() {
+      if (!this._profile) this._profile = defaultProfileData();
+      return this._profile;
+    },
+
+    updateProfileSync(mutator) {
+      const profile = this.getProfileSync();
+      if (typeof mutator === "function") mutator(profile);
+      profile.updatedAt = nowISO();
+      this.saveProfile(profile);
+      return profile;
+    },
+
+    async saveProfile(data) {
+      if (!this._user) return;
+      try {
+        await this._data.save(this._user.id, data || this.getProfileSync());
+      } catch (e) {
+        console.warn("Nie udało się zapisać danych profilu:", e);
+      }
+    },
+
+    async loadProfileFor(user) {
+      const profile = await this._data.load(user.id);
+      if (this._user && this._user.id === user.id) {
+        this._profile = profile || defaultProfileData();
+      }
+      return this._profile;
+    },
+
+    /* Gwarantuje, że profil (postęp + odznaki + trasy) jest wczytany.
+       W trybie lokalnym jest dostępny od razu, a przy Firestore
+       wymaga oczekiwania na odpowiedź serwera. */
+    async ensureProfileLoaded() {
+      if (!this._user) return null;
+      if (this._profile) return this._profile;
+      try {
+        await this.loadProfileFor(this._user);
+      } catch (e) {
+        console.warn("Nie udało się wczytać profilu:", e);
+        this._profile = defaultProfileData();
+      }
+      return this._profile;
+    },
+
+    /* ---------- BRAMKA LOGOWANIA (OTWIERANIE / ZAMYKANIE) ---------- */
+    open(mode) {
+      if (mode === "login" || mode === "register") this._mode = mode;
+      this._renderMode();
+      const gate = document.getElementById("authGate");
+      if (gate) {
+        gate.classList.add("is-open");
+        gate.setAttribute("aria-hidden", "false");
+      }
+      document.body.classList.add("auth-locked");
+      // Autofokus na pierwszym polu — wygodniejsze logowanie.
+      const focusEl = document.getElementById(
+        this._mode === "register" ? "authName" : "authEmail"
+      );
+      if (focusEl) {
+        try {
+          focusEl.focus({ preventScroll: true });
+        } catch (e) {
+          focusEl.focus();
+        }
+      }
+      this._setError("");
+    },
+
+    /* Zamknięcie bramki jest możliwe tylko wtedy, gdy użytkownik jest
+       już zalogowany (gość lub konto) — inaczej nie mamy czego pokazać. */
+    close() {
+      if (!this._user) return false;
+      const gate = document.getElementById("authGate");
+      if (gate) {
+        gate.classList.remove("is-open");
+        gate.setAttribute("aria-hidden", "true");
+      }
+      document.body.classList.remove("auth-locked");
+      this._setError("");
+      return true;
+    },
+
+    toggle(mode) {
+      const gate = document.getElementById("authGate");
+      if (gate && gate.classList.contains("is-open")) this.close();
+      else this.open(mode);
+    },
+
+    isGateOpen() {
+      const gate = document.getElementById("authGate");
+      return !!(gate && gate.classList.contains("is-open"));
+    },
+
+    /* ---------- INICJALIZACJA ---------- */
+    async init() {
+      let user = null;
+      try {
+        user = this._auth.readSession();
+      } catch (e) {
+        user = null;
+      }
+      if (user) {
+        this._user = user;
+        this._profile = defaultProfileData();
+        this._emit();
+        this.loadProfileFor(user)
+          .then(() => this._emit())
+          .catch((e) => console.warn("Nie udało się wczytać profilu z Firestore:", e));
+      }
+      return this._user;
+    },
+
+    /* Firebase (oraz inne źródła zewnętrzne) zgłasza stan logowania
+       asynchronicznie przez onAuthStateChanged. Ta metoda:
+         • zapamiętuje użytkownika,
+         • wczytuje jego postęp treningów i odznaki z Firestore,
+         • informuje UI (onChange → applyProfileForUser).
+       Dzięki temu po odświeżeniu strony użytkownik pozostaje
+       zalogowany, a jego dane wracają z chmury. */
+    async applyExternalUser(user) {
+      if (user) {
+        this._user = user;
+        this._profile = defaultProfileData();
+        this._emit();
+        this.loadProfileFor(user)
+          .then(() => this._emit())
+          .catch((e) => console.warn("Nie udało się wczytać profilu z Firestore:", e));
+        return user;
+      }
+
+      /* Wylogowanie. Sesję lokalną (tryb offline) zachowujemy, jeśli
+         aktywny adapter to adapter lokalny. */
+      if (this._auth.id !== "local") removeKey(SESSION_KEY);
+      this._user = null;
+      this._profile = null;
+      this._emit();
+      return null;
+    },
+
+    /* Most dla zewnętrznych providerów (np. Firebase onAuthStateChanged).
+       Implementacja znajduje się wyżej, razem z inicjalizacją. */
+
+    /* ---------- WALIDACJA ---------- */
+    _validate(email, password, isRegister) {
+      if (!String(email || "").trim() || !String(password || "")) {
+        throw authError("REQUIRED");
+      }
+      if (!isValidEmail(email)) throw authError("INVALID_EMAIL");
+      if (isRegister && String(password).length < MIN_PASSWORD_LENGTH) {
+        throw authError("WEAK_PASSWORD");
+      }
+    },
+
+    /* ---------- OPERACJE ---------- */
+    async register(email, password, displayName) {
+      this._validate(email, password, true);
+      const user = await this._auth.signUp(email, password, displayName);
+      await this._activate(user);
+      return user;
+    },
+
+    async login(email, password) {
+      this._validate(email, password, false);
+      const user = await this._auth.signIn(email, password);
+      await this._activate(user);
+      return user;
+    },
+
+    async loginAsGuest() {
+      const user = await this._auth.signInAsGuest();
+      await this._activate(user);
+      return user;
+    },
+
+    /* Logowanie przez Google. Dostępne wyłącznie dla adapterów,
+       które implementują tę metodę (np. Firebase). */
+    supportsGoogle() {
+      return !!(
+        this._auth &&
+        typeof this._auth.signInWithGoogle === "function" &&
+        this._auth.id !== "local"
+      );
+    },
+
+    async loginWithGoogle() {
+      if (typeof this._auth.signInWithGoogle !== "function") {
+        throw authError("GOOGLE_UNAVAILABLE");
+      }
+      const user = await this._auth.signInWithGoogle();
+      await this._activate(user);
+      return user;
+    },
+
+    /* Czy aktywne konto jest zapisywane w chmurze (Firestore)? */
+    isCloudStorage() {
+      return !!(this._data && this._data.id !== "local");
+    },
+
+    async logout() {
+      try {
+        await this._auth.signOut();
+      } catch (e) {
+        /* ignore */
+      }
+      removeKey(SESSION_KEY);
+      this._user = null;
+      this._profile = null;
+      // Zamknij bramkę — użytkownik musi się ponownie zalogować.
+      const gate = document.getElementById("authGate");
+      if (gate) gate.classList.remove("is-open");
+      document.body.classList.remove("auth-locked");
+      this._setError("");
+      this._emit();
+    },
+
+    /* aktywacja użytkownika + wczytanie jego profilu + powiadomienie UI */
+    async _activate(user) {
+      this._user = user;
+      // sesję zapamiętujemy tylko dla adaptera lokalnego
+      if (this._auth.id === "local") {
+        writeJSON(SESSION_KEY, {
+          id: user.id,
+          email: user.email,
+          displayName: user.displayName,
+          isGuest: !!user.isGuest,
+          createdAt: user.createdAt,
+        });
+      }
+      this._profile = defaultProfileData();
+      this._emit();
+      this.loadProfileFor(user)
+        .then(() => this._emit())
+        .catch((e) => console.warn("Nie udało się wczytać profilu z Firestore:", e));
+    },
+
+    /* ---------- ZDARZENIA ---------- */
+    onChange(cb) {
+      if (typeof cb !== "function") return () => {};
+      this._listeners.push(cb);
+      return () => {
+        this._listeners = this._listeners.filter((fn) => fn !== cb);
+      };
+    },
+
+    _emit() {
+      this._listeners.forEach((cb) => {
+        try {
+          cb(this._user);
+        } catch (e) {
+          console.warn("Błąd słuchacza auth:", e);
+        }
+      });
+    },
+
+    /* =========================================================
+       INTERFEJS (BRAMKA LOGOWANIA + PASEK PROFILU)
+       ========================================================= */
+    initUI() {
+      const form = document.getElementById("authForm");
+      const tabs = document.querySelectorAll(".auth-tab");
+      const guestBtn = document.getElementById("authGuest");
+      const logoutBtn = document.getElementById("profileLogout");
+      const googleBtn = document.getElementById("authGoogle");
+      const closeBtn = document.getElementById("authClose");
+      const loginBtn = document.getElementById("headerLogin");
+      const registerBtn = document.getElementById("headerRegister");
+
+      // Zakładki Logowanie / Rejestracja
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          this._mode = tab.dataset.authTab === "register" ? "register" : "login";
+          this._setError("");
+          this._renderMode();
+        });
+      });
+
+      // Przyciski w nagłówku (widoczne w trybie gościa)
+      if (loginBtn) loginBtn.addEventListener("click", () => this.open("login"));
+      if (registerBtn)
+        registerBtn.addEventListener("click", () => this.open("register"));
+
+      // Zamknięcie modala (tylko gdy jesteśmy zalogowani jako gość)
+      if (closeBtn) {
+        closeBtn.addEventListener("click", () => {
+          if (!this.close()) {
+            this._setError(this._tr("authErrLoginRequired"));
+          }
+        });
+      }
+
+      // Klik w tło zamyka modal; Escape również.
+      const gate = document.getElementById("authGate");
+      if (gate) {
+        gate.addEventListener("click", (e) => {
+          if (e.target === gate) this.close();
+        });
+      }
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && this.isGateOpen()) this.close();
+      });
+
+      // Link „Nie masz konta? Zarejestruj się” pod formularzem
+      const switchBtn = document.getElementById("authSwitchMode");
+      if (switchBtn) {
+        switchBtn.addEventListener("click", () => {
+          this._mode = this._mode === "register" ? "login" : "register";
+          this._setError("");
+          this._renderMode();
+        });
+      }
+
+      if (form) {
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          this._submitForm();
+        });
+      }
+
+      if (guestBtn) {
+        guestBtn.addEventListener("click", () => {
+          this._setError("");
+          this._setBusy(true);
+          this.loginAsGuest()
+            .catch((err) => this._setError(this._translateError(err)))
+            .then(() => this._setBusy(false));
+        });
+      }
+
+      if (googleBtn) {
+        googleBtn.addEventListener("click", async () => {
+          if (!this.supportsGoogle()) {
+            this._setError(this._tr("authErrProviderDisabled"));
+            return;
+          }
+          this._setError("");
+          this._setBusy(true);
+          try {
+            await this.loginWithGoogle();
+          } catch (err) {
+            this._setError(this._translateError(err));
+          } finally {
+            this._setBusy(false);
+          }
+        });
+      }
+
+      if (logoutBtn) {
+        logoutBtn.addEventListener("click", () => {
+          this.logout().catch(() => {});
+        });
+      }
+
+      this._renderMode();
+    },
+
+    /* Czyści pola formularza i komunikat błędu. */
+    resetForm() {
+      const form = document.getElementById("authForm");
+      if (form) form.reset();
+      this._setError("");
+    },
+
+    _renderMode() {
+      const isRegister = this._mode === "register";
+      document.querySelectorAll(".auth-tab").forEach((tab) => {
+        tab.classList.toggle("is-active", tab.dataset.authTab === this._mode);
+        tab.setAttribute(
+          "aria-selected",
+          tab.dataset.authTab === this._mode ? "true" : "false"
+        );
+      });
+
+      const nameField = document.querySelector("[data-auth-field='name']");
+      if (nameField) nameField.hidden = !isRegister;
+
+      const submit = document.getElementById("authSubmit");
+      if (submit) submit.textContent = this._tr(isRegister ? "authRegisterBtn" : "authLoginBtn");
+
+      const title = document.getElementById("authTitle");
+      if (title) title.textContent = this._tr(isRegister ? "authTitleRegister" : "authTitleLogin");
+
+      const lead = document.getElementById("authLead");
+      if (lead) lead.textContent = this._tr(isRegister ? "authLeadRegister" : "authLeadLogin");
+
+      const switchHint = document.getElementById("authSwitchHint");
+      if (switchHint) {
+        switchHint.textContent = this._tr(
+          isRegister ? "authHaveAccount" : "authNoAccount"
+        );
+      }
+      const switchBtn = document.getElementById("authSwitchMode");
+      if (switchBtn) {
+        switchBtn.textContent = this._tr(
+          isRegister ? "authSwitchToLogin" : "authSwitchToRegister"
+        );
+      }
+
+      // Google: pokazujemy wyłącznie dla adapterów, które go obsługują.
+      const googleWrap = document.getElementById("authGoogleWrap");
+      const googleBtn = document.getElementById("authGoogle");
+      const googleLabel = document.querySelector("[data-auth-google-label]");
+      if (googleWrap) googleWrap.hidden = !this.supportsGoogle();
+      if (googleBtn) googleBtn.disabled = !this.supportsGoogle();
+      if (googleLabel) {
+        googleLabel.textContent = this._tr(
+          isRegister ? "authGoogleRegister" : "authGoogleLogin"
+        );
+      }
+
+      // Notka o miejscu przechowywania danych (localStorage vs Firestore)
+      const note = document.getElementById("authNote");
+      if (note) {
+        note.textContent = this._tr(
+          this.isCloudStorage() ? "authNoteCloud" : "authNote"
+        );
+      }
+
+      // Zamknij (X) ma sens tylko, gdy trwa sesja (np. gość chce się zalogować)
+      const closeBtn = document.getElementById("authClose");
+      if (closeBtn) closeBtn.hidden = !this._user;
+
+      // hasło: przy logowaniu chowamy podpowiedź o długości
+      const pw = document.getElementById("authPassword");
+      if (pw) {
+        pw.setAttribute("minlength", isRegister ? String(MIN_PASSWORD_LENGTH) : "0");
+        pw.setAttribute("autocomplete", isRegister ? "new-password" : "current-password");
+      }
+    },
+
+    async _submitForm() {
+      const emailEl = document.getElementById("authEmail");
+      const passEl = document.getElementById("authPassword");
+      const nameEl = document.getElementById("authName");
+
+      const email = emailEl ? emailEl.value.trim() : "";
+      const password = passEl ? passEl.value : "";
+      const name = nameEl ? nameEl.value.trim() : "";
+
+      this._setError("");
+      this._setBusy(true);
+      try {
+        if (this._mode === "register") {
+          await this.register(email, password, name);
+        } else {
+          await this.login(email, password);
+        }
+        const form = document.getElementById("authForm");
+        if (form) form.reset();
+      } catch (err) {
+        this._setError(this._translateError(err));
+      } finally {
+        this._setBusy(false);
+      }
+    },
+
+    /* Zamienia błąd adaptera (lokalnego lub Firebase) na komunikat
+       w aktualnym języku interfejsu. */
+    _translateError(err) {
+      const code = normalizeError(err);
+      const key = ERROR_KEYS[code] || ERROR_KEYS.GENERIC;
+      return this._tr(key);
+    },
+
+    _setError(message) {
+      const box = document.getElementById("authError");
+      if (!box) return;
+      box.textContent = message || "";
+      box.classList.toggle("is-visible", !!message);
+    },
+
+    _setBusy(busy) {
+      const submit = document.getElementById("authSubmit");
+      const guest = document.getElementById("authGuest");
+      const google = document.getElementById("authGoogle");
+      const tabs = document.querySelectorAll(".auth-tab");
+      if (submit) submit.disabled = !!busy;
+      if (guest) guest.disabled = !!busy;
+      if (google) google.disabled = !!busy || !this.supportsGoogle();
+      tabs.forEach((tab) => {
+        tab.disabled = !!busy;
+      });
+    },
+  };
+
+  /* =========================================================
+     EKSPORT
+     ========================================================= */
+  global.BiegStartAuth = service;
+
+  // API pomocnicze (np. dla adaptera Firebase)
+  global.BiegStartAuth.normalizeProfileData = normalizeProfileData;
+  global.BiegStartAuth.defaultProfileData = defaultProfileData;
+  global.BiegStartAuth.DATA_PREFIX = DATA_PREFIX;
+  global.BiegStartAuth.GUEST_ID = GUEST_ID;
+  global.BiegStartAuth.normalizeError = normalizeError;
+})(window);

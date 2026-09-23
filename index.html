@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n="docTitle">BiegStart - Twoja droga do regularnego biegania</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ---------- BRAMKA LOGOWANIA / REJESTRACJI ---------- -->
+  <div class="auth-gate" id="authGate" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-hidden="true">
+    <div class="auth-card">
+      <button type="button" class="auth-close" id="authClose" aria-label="Zamknij" hidden>✕</button>
+
+      <div class="auth-brand">
+        <span class="auth-brand__badge">BiegStart</span>
+        <h2 class="auth-brand__title" id="authTitle" data-i18n="authTitleLogin">Zaloguj się</h2>
+        <p class="auth-brand__lead" id="authLead" data-i18n="authLeadLogin">Twoje treningi, statystyki i trasy zapisują się na Twoim profilu.</p>
+      </div>
+
+      <div class="auth-tabs" role="tablist" id="authTabs">
+        <button type="button" class="auth-tab is-active" data-auth-tab="login" role="tab" aria-selected="true" data-i18n="authTabLogin">Logowanie</button>
+        <button type="button" class="auth-tab" data-auth-tab="register" role="tab" aria-selected="false" data-i18n="authTabRegister">Rejestracja</button>
+      </div>
+
+      <form id="authForm" class="auth-form" novalidate>
+        <label class="auth-field" data-auth-field="name" hidden>
+          <span data-i18n="authName">Nazwa użytkownika (opcjonalnie)</span>
+          <input id="authName" type="text" autocomplete="nickname" placeholder="Anna" />
+        </label>
+        <label class="auth-field">
+          <span data-i18n="authEmail">E-mail</span>
+          <input id="authEmail" type="email" autocomplete="email" required placeholder="ty@example.com" />
+        </label>
+        <label class="auth-field">
+          <span data-i18n="authPassword">Hasło</span>
+          <input id="authPassword" type="password" autocomplete="current-password" minlength="6" required placeholder="••••••" />
+        </label>
+
+        <p class="auth-error" id="authError" role="alert"></p>
+
+        <div class="auth-actions">
+          <button type="submit" class="btn btn--primary" id="authSubmit" data-i18n="authLoginBtn">Zaloguj się</button>
+        </div>
+      </form>
+
+      <!-- Logowanie przez Google (widoczne tylko gdy provider jest dostępny) -->
+      <div class="auth-google" id="authGoogleWrap" hidden>
+        <div class="auth-sep"><span data-i18n="authOr">lub</span></div>
+        <button type="button" class="auth-google__btn" id="authGoogle">
+          <span class="auth-google__icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="18" height="18" focusable="false">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            </svg>
+          </span>
+          <span data-auth-google-label data-i18n="authGoogleLogin">Zaloguj przez Google</span>
+        </button>
+      </div>
+
+      <p class="auth-switch">
+        <span id="authSwitchHint" data-i18n="authNoAccount">Nie masz konta?</span>
+        <button type="button" class="auth-switch__link" id="authSwitchMode" data-i18n="authSwitchToRegister">Zarejestruj się</button>
+      </p>
+
+      <div class="auth-actions auth-actions--guest">
+        <button type="button" class="btn btn--ghost" id="authGuest" data-i18n="authGuestBtn">Kontynuuj jako gość</button>
+      </div>
+
+      <p class="auth-note" id="authNote" data-i18n="authNote">Konto gościa zapisuje dane tylko w tej przeglądarce (localStorage).</p>
+    </div>
+  </div>
+
+  <div class="app">
+    <header class="hero">
+      <div class="hero__glow"></div>
+      <div class="hero__controls">
+        <div class="lang-switch" id="langSwitch" role="group" aria-label="Language">
+          <button type="button" class="lang-btn" data-lang="pl">PL</button>
+          <button type="button" class="lang-btn" data-lang="en">EN</button>
+        </div>
+        <button type="button" class="theme-toggle" id="themeToggle" aria-label="Theme">
+          <span id="themeIcon">🌙</span>
+        </button>
+        <div class="profile-bar" id="profileBar" hidden>
+          <span class="profile-bar__avatar" id="profileAvatar" aria-hidden="true">?</span>
+          <span class="profile-bar__info">
+            <span class="profile-bar__name" id="profileName"></span>
+            <span class="profile-bar__role" id="profileRole"></span>
+          </span>
+          <button type="button" class="profile-bar__logout" id="profileLogout" data-i18n="profileLogout">Wyloguj</button>
+        </div>
+
+        <!-- Tryb gościa: skróty do logowania i rejestracji -->
+        <div class="auth-links" id="headerAuthLinks" hidden aria-label="Autoryzacja">
+          <button type="button" class="auth-links__btn auth-links__btn--login" id="headerLogin" data-i18n="headerLogin">Zaloguj się</button>
+          <button type="button" class="auth-links__btn auth-links__btn--register" id="headerRegister" data-i18n="headerRegister">Zarejestruj</button>
+        </div>
+      </div>
+      <div class="hero__content">
+        <span class="hero__badge" data-i18n="heroBadge">BiegStart</span>
+        <h1>
+          <span data-i18n="heroTitle1">Zacznij biegac</span>
+          <span class="accent" data-i18n="heroTitle2">bez presji</span>
+        </h1>
+        <p class="hero__lead" data-i18n="heroLead">
+          Treningi co 2-3 dni (nie codziennie!), start od bardzo latwych
+          spacerow i truchtu. Kazde zadanie przybliza Cie do pierwszego
+          ciaglego biegu.
+        </p>
+      </div>
+    </header>
+
+    <!-- ---------- GORNE MENU NAWIGACYJNE (ZAKŁADKI) ---------- -->
+    <nav class="tabnav" id="tabNav" role="tablist" aria-label="Nawigacja">
+      <button type="button" class="tabnav__btn is-active" data-tab="dashboard" role="tab" aria-selected="true" aria-controls="view-dashboard" data-i18n="navDashboard">Pulpit</button>
+      <button type="button" class="tabnav__btn" data-tab="plan" role="tab" aria-selected="false" aria-controls="view-plan" data-i18n="navPlan">Plan Treningowy</button>
+      <button type="button" class="tabnav__btn" data-tab="training" role="tab" aria-selected="false" aria-controls="view-training" data-i18n="navTraining">Trening & Mapa</button>
+      <button type="button" class="tabnav__btn" data-tab="guide" role="tab" aria-selected="false" aria-controls="view-guide" data-i18n="navGuide">Poradnik</button>
+    </nav>
+
+    <!-- ================= ZAKŁADKA 1: PULPIT ================= -->
+    <div class="tabview is-active" id="view-dashboard" data-view="dashboard" role="tabpanel">
+      <section class="stats" aria-label="Statystyki">
+        <div class="stat">
+          <span class="stat__value" id="statCompleted">0</span>
+          <span class="stat__label" data-i18n="statCompleted">Ukonczone treningi</span>
+        </div>
+        <div class="stat">
+          <span class="stat__value" id="statProgress">0%</span>
+          <span class="stat__label" data-i18n="statProgress">Postep planu</span>
+        </div>
+        <div class="stat">
+          <span class="stat__value" id="statStreak">0</span>
+          <span class="stat__label" data-i18n="statStreak">Seria treningow</span>
+        </div>
+        <div class="stat">
+          <span class="stat__value" id="statMinutes">0</span>
+          <span class="stat__label" data-i18n="statMinutes">Minut w ruchu</span>
+        </div>
+      </section>
+
+      <section id="nextSection" class="next">
+        <h2 class="section-title" data-i18n="nextTitle">Nastepny trening</h2>
+        <div id="nextCard" class="next-card"></div>
+        <div class="next__rest">
+          <span class="rest-icon">💤</span>
+          <div>
+            <strong data-i18n="restTitle">Dni odpoczynku sa czescia planu.</strong>
+            <p data-i18n="restText">Miedzy treningami masz 1-2 dni przerwy. Odpoczynek to nie lenistwo - to sposob, w jaki miesnie sie wzmacniaja. Nie nadrabiaj zaleglosci na sile.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="achievementsSection" class="achievements">
+        <h2 class="section-title" data-i18n="badgesTitle">Osiągnięcia</h2>
+        <p class="achievements__hint" data-i18n="badgesHint">Zdobywaj odznaki, wykonując treningi i korzystając z narzędzi. Zablokowane są szare — zdobyte świecą pełnym kolorem.</p>
+
+        <div class="achievements__head">
+          <span class="achievements__progress" id="badgesProgress" data-i18n="badgesProgress">Zdobyte odznaki</span>
+          <div class="achievements__meter">
+            <div class="achievements__meter-bar" id="badgesMeter"></div>
+          </div>
+        </div>
+
+        <div id="badgesGrid" class="badges-grid"></div>
+      </section>
+
+      <section class="motivation">
+        <h2 class="section-title" data-i18n="motivationTitle">Motywacja na dzis</h2>
+        <blockquote id="quote" class="quote">...</blockquote>
+        <p class="motivation__tip" data-i18n="motivationTip">Najtrudniejszy jest pierwszy krok za drzwi. Reszte juz nosisz ze soba.</p>
+      </section>
+    </div>
+
+    <!-- ================= ZAKŁADKA 2: PLAN TRENINGOWY ================= -->
+    <div class="tabview" id="view-plan" data-view="plan" role="tabpanel">
+      <section id="planSection" class="plan">
+        <div class="plan__head">
+          <h2 class="section-title" data-i18n="planTitle">Plan treningowy</h2>
+          <p class="plan__hint" data-i18n="planHint">Kliknij kafelek, aby odblokować szczegóły treningu. Ukończone dni zmieniają kolor na zielony z haczykiem.</p>
+          <div class="filters" id="filters">
+            <button class="filter-btn is-active" data-filter="all" data-i18n="filterAll">Wszystkie</button>
+            <button class="filter-btn" data-filter="todo" data-i18n="filterTodo">Do zrobienia</button>
+            <button class="filter-btn" data-filter="done" data-i18n="filterDone">Ukonczone</button>
+          </div>
+        </div>
+        <div id="planList" class="plan-grid"></div>
+        <div id="planDetails" class="plan-details"></div>
+      </section>
+    </div>
+
+    <!-- ================= ZAKŁADKA 3: TRENING & MAPA ================= -->
+    <div class="tabview" id="view-training" data-view="training" role="tabpanel">
+      <section id="timerSection" class="timer">
+        <h2 class="section-title" data-i18n="timerTitle">Stoper interwałowy</h2>
+        <p class="timer-hint" data-i18n="timerHint">Ustaw czasy marszu i truchtu albo pobierz je automatycznie z wybranego treningu. Stoper odlicza fazy i sygnalizuje zmiany dźwiękiem.</p>
+
+        <div class="timer-card" id="timerCard">
+          <div class="timer-phase" id="timerPhase"><span id="timerPhaseLabel">MARSZ</span></div>
+          <div class="timer-display" id="timerDisplay">02:00</div>
+          <div class="timer-meta">
+            <span id="timerRound"></span>
+            <span id="timerTotal"></span>
+          </div>
+          <div class="timer-progress"><div class="timer-progress__bar" id="timerBar"></div></div>
+
+          <div class="timer-controls">
+            <button id="timerStart" class="btn btn--primary" data-i18n="timerStart">Start</button>
+            <button id="timerPause" class="btn btn--ghost" data-i18n="timerPause">Pauza</button>
+            <button id="timerReset" class="btn btn--ghost" data-i18n="timerReset">Reset</button>
+          </div>
+
+          <div class="timer-config">
+            <label class="timer-field">
+              <span data-i18n="timerWalk">Marsz (sekundy)</span>
+              <input id="cfgWalk" type="number" min="0" max="3600" step="5" value="120" />
+            </label>
+            <label class="timer-field">
+              <span data-i18n="timerRun">Trucht / bieg (sekundy)</span>
+              <input id="cfgRun" type="number" min="0" max="3600" step="5" value="120" />
+            </label>
+            <label class="timer-field">
+              <span data-i18n="timerRounds">Liczba rund</span>
+              <input id="cfgRounds" type="number" min="1" max="99" step="1" value="5" />
+            </label>
+            <button id="timerLoadPlan" class="btn btn--ghost" data-i18n="timerLoadPlan">Pobierz z wybranego treningu</button>
+          </div>
+
+          <p class="timer-status" id="timerStatus"></p>
+        </div>
+      </section>
+
+      <section id="toolsSection" class="tools">
+        <h2 class="section-title" data-i18n="toolsTitle">Kalkulator tempa i kalorii</h2>
+        <p class="tools-hint" data-i18n="toolsHint">Podaj wagę, dystans i czas - aplikacja policzy tempo, prędkość i spalone kalorie. Możesz też narysować trasę na mapie, a dystans zostanie wpisany automatycznie.</p>
+
+        <div class="tools-grid">
+          <div class="calc-card">
+            <div class="calc-row calc-row--toggle">
+              <span class="calc-label" data-i18n="activityLabel">Aktywność</span>
+              <div class="switch" id="activitySwitch" role="group">
+                <button type="button" class="switch-btn is-active" data-activity="walk" data-i18n="actWalk">Marsz</button>
+                <button type="button" class="switch-btn" data-activity="run" data-i18n="actRun">Bieg</button>
+              </div>
+            </div>
+
+            <label class="calc-row">
+              <span class="calc-label" data-i18n="fieldWeight">Waga (kg)</span>
+              <input id="calcWeight" type="number" min="20" max="300" step="0.5" value="70" />
+            </label>
+            <label class="calc-row">
+              <span class="calc-label" data-i18n="fieldDistance">Dystans (km)</span>
+              <input id="calcDistance" type="number" min="0" max="500" step="0.01" value="5" />
+            </label>
+            <label class="calc-row">
+              <span class="calc-label" data-i18n="fieldTime">Czas (minuty)</span>
+              <input id="calcTime" type="number" min="0" max="1440" step="1" value="30" />
+            </label>
+
+            <div class="calc-results">
+              <div class="calc-result">
+                <span class="calc-result__value" id="resPace">--:--</span>
+                <span class="calc-result__label" data-i18n="resPace">Średnie tempo (min/km)</span>
+              </div>
+              <div class="calc-result">
+                <span class="calc-result__value" id="resSpeed">0.0</span>
+                <span class="calc-result__label" data-i18n="resSpeed">Średnia prędkość (km/h)</span>
+              </div>
+              <div class="calc-result">
+                <span class="calc-result__value" id="resCalories">0</span>
+                <span class="calc-result__label" data-i18n="resCalories">Spalone kalorie (kcal)</span>
+              </div>
+            </div>
+
+            <p class="calc-note" data-i18n="calcNote">Kalorie to szacunek na podstawie MET i wagi - wynik orientacyjny.</p>
+            <button id="calcSave" class="btn btn--primary" data-i18n="calcSave">Zapisz wynik</button>
+          </div>
+
+          <div class="map-card">
+            <div class="map-toolbar">
+              <span class="calc-label" data-i18n="mapLabel">Mapa trasy (klikaj, aby dodać punkty)</span>
+              <div class="map-toolbar__actions">
+                <button id="mapRecord" class="btn btn--record btn--small" type="button" aria-pressed="false">
+                  <span data-gps-icon aria-hidden="true">🔴</span> <span data-gps-label data-i18n="mapRecord">Rozpocznij trening GPS</span>
+                </button>
+                <button id="mapLocate" class="btn btn--primary btn--small" type="button">
+                  <span aria-hidden="true">📍</span> <span data-i18n="mapLocate">Znajdź moją lokalizację</span>
+                </button>
+                <button id="mapClear" class="btn btn--ghost btn--small" data-i18n="mapClear">Wyczyść trasę</button>
+              </div>
+            </div>
+            <div id="map" class="map"></div>
+            <p class="map-info"><span data-i18n="mapDistance">Dystans trasy:</span> <strong id="mapDistance">0.00 km</strong></p>
+          </div>
+        </div>
+
+        <div class="saved">
+          <h3 class="saved-title" data-i18n="savedTitle">Zapisane trasy i wyniki</h3>
+          <div id="savedList" class="saved-list"></div>
+          <button id="savedClear" class="btn btn--danger btn--small" data-i18n="savedClear">Usuń wszystkie zapisane</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= ZAKŁADKA 4: PORADNIK ================= -->
+    <div class="tabview" id="view-guide" data-view="guide" role="tabpanel">
+      <section id="guideSection" class="guide">
+        <h2 class="section-title" data-i18n="guideTitle">Baza wiedzy i rozgrzewka dla początkujących</h2>
+        <p class="guide-hint" data-i18n="guideHint">Krótkie porady, rozwiane mity i gotowy zestaw ćwiczeń rozgrzewkowych - wszystko, czego potrzebujesz na start.</p>
+
+        <div class="guide-tabs" id="guideTabs">
+          <button class="guide-tab is-active" data-tab="tips" data-i18n="tabTips">Poradnik</button>
+          <button class="guide-tab" data-tab="myths" data-i18n="tabMyths">Mity o bieganiu</button>
+          <button class="guide-tab" data-tab="warmup" data-i18n="tabWarmup">Rozgrzewka przed biegiem</button>
+        </div>
+
+        <div id="guideContent" class="guide-content"></div>
+      </section>
+    </div>
+
+    <footer class="footer">
+      <button id="resetBtn" class="btn btn--danger" data-i18n="resetBtn">Resetuj postep</button>
+      <p class="footer__note" data-i18n="footerNote">Twoje postepy zapisuja sie w tej przegladarce (localStorage).</p>
+    </footer>
+  </div>
+
+  <!-- Powiadomienia o nowych odznakach -->
+  <div id="badgeToast" class="badge-toast-host" aria-live="polite"></div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <!-- Konfiguracja Firebase (apiKey, authDomain, projectId itd.) -->
+  <script src="firebase-config.js"></script>
+  <!-- Moduł uwierzytelniania i profili (adapter lokalny + baza pod Firebase) -->
+  <script src="auth.js"></script>
+  <!-- Adaptery Firebase Authentication + Cloud Firestore -->
+  <script src="firebase-adapter.js"></script>
+  <!-- Inicjalizacja modułów Firebase v10: ładuje SDK i podpina
+       onAuthStateChanged. Bez uzupełnionej konfiguracji nie robi nic,
+       a aplikacja działa dalej w trybie lokalnym. -->
+  <script src="firebase-init.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
