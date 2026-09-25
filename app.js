@@ -194,6 +194,23 @@ const I18N = {
     navPlan: "Plan Treningowy",
     navTraining: "Trening & Mapa",
     navGuide: "Poradnik",
+    historyTitle: "Moja Historia Biegów",
+    historyHint: "Twoje zapisane biegi pojawiają się tutaj automatycznie.",
+    historyEmpty: "Brak zapisanych biegów.",
+    manualRunTitle: "Dodaj bieg ręcznie",
+    manualDate: "Data",
+    manualDistance: "Dystans (km)",
+    manualMinutes: "Czas (min)",
+    manualSave: "Zapisz wpis",
+    liveEyebrow: "GPS",
+    liveTitle: "Bieg na żywo",
+    liveReady: "Gotowy",
+    liveRecording: "Nagrywanie",
+    liveTime: "Czas",
+    liveDistance: "Dystans",
+    livePace: "Tempo min/km",
+    startRun: "▶️ START / NAGRYWAJ BIEG",
+    finishRun: "⏹️ ZAKOŃCZ I ZAPISZ",
   },
   en: {
     docTitle: "BiegStart - Your path to regular running",
@@ -382,6 +399,23 @@ const I18N = {
     navPlan: "Training Plan",
     navTraining: "Workout & Map",
     navGuide: "Guide",
+    historyTitle: "My Run History",
+    historyHint: "Your saved runs appear here automatically.",
+    historyEmpty: "No saved runs yet.",
+    manualRunTitle: "Add a run manually",
+    manualDate: "Date",
+    manualDistance: "Distance (km)",
+    manualMinutes: "Time (min)",
+    manualSave: "Save entry",
+    liveEyebrow: "GPS",
+    liveTitle: "Live run",
+    liveReady: "Ready",
+    liveRecording: "Recording",
+    liveTime: "Time",
+    liveDistance: "Distance",
+    livePace: "Pace min/km",
+    startRun: "▶️ START / RECORD RUN",
+    finishRun: "⏹️ FINISH & SAVE",
   },
 };
 
@@ -1731,6 +1765,7 @@ let gpsUserMarker = null; // znacznik aktualnej pozycji użytkownika
 let gpsStartedAt = 0; // znacznik czasu startu nagrania
 let gpsTickerId = null; // interwał aktualizujący czas w kalkulatorze
 let gpsLastPoint = null; // ostatni zaakceptowany punkt [lat, lng]
+let stopRunHistoryListener = null;
 
 /* MET (metabolic equivalent) dla aktywnosci */
 function metFor(activityType) {
@@ -1808,12 +1843,22 @@ function routeDistance() {
 
 function updateMapDistance() {
   const km = routeDistance();
-  document.getElementById("mapDistance").textContent = `${km.toFixed(2)} km`;
-  // Przekaz dystans do kalkulatora
-  if (routePoints.length >= 2) {
-    document.getElementById("calcDistance").value = km.toFixed(2);
-    renderCalc();
+  const distance = document.getElementById("liveDistance");
+  const pace = document.getElementById("livePace");
+  if (distance) distance.textContent = `${km.toFixed(2)} km`;
+  if (pace) pace.textContent = formatLivePace(km, gpsStartedAt ? Date.now() - gpsStartedAt : 0);
+}
+
+function formatLivePace(distanceKm, elapsedMs) {
+  if (!distanceKm || !elapsedMs) return "--:--";
+  const totalMinutes = elapsedMs / 60000;
+  let minutes = Math.floor(totalMinutes / distanceKm);
+  let seconds = Math.round((totalMinutes / distanceKm - minutes) * 60);
+  if (seconds === 60) {
+    minutes += 1;
+    seconds = 0;
   }
+  return `${pad2(minutes)}:${pad2(seconds)} min/km`;
 }
 
 function addRoutePoint(latlng) {
@@ -1847,7 +1892,10 @@ function clearRoute() {
     map.removeLayer(routeLine);
     routeLine = null;
   }
-  document.getElementById("mapDistance").textContent = "0.00 km";
+  const distance = document.getElementById("liveDistance");
+  const pace = document.getElementById("livePace");
+  if (distance) distance.textContent = "0.00 km";
+  if (pace) pace.textContent = "--:--";
 }
 
 /* Domyślny widok mapy — cała Polska (używany też jako fallback) */
@@ -1864,7 +1912,6 @@ function initMap() {
     attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)'
   }).addTo(map);
 
-  map.on("click", (e) => addRoutePoint(e.latlng));
 }
 
 /* Przywraca domyślny widok mapy (cała Polska) — np. gdy brak zgody na lokalizację */
@@ -1918,21 +1965,12 @@ function locateUser() {
 
 /* Aktualizuje wygląd przycisku nagrywania (tekst + stan pulsowania) */
 function updateGpsButton() {
-  const btn = document.getElementById("mapRecord");
-  if (!btn) return;
-  const label = btn.querySelector("[data-gps-label]");
-  const icon = btn.querySelector("[data-gps-icon]");
-
-  btn.classList.toggle("is-recording", gpsTracking);
-  btn.setAttribute("aria-pressed", gpsTracking ? "true" : "false");
-
-  if (gpsTracking) {
-    if (icon) icon.textContent = "⏹️";
-    if (label) label.textContent = t("mapRecordStop");
-  } else {
-    if (icon) icon.textContent = "🔴";
-    if (label) label.textContent = t("mapRecord");
-  }
+  const start = document.getElementById("startRun");
+  const finish = document.getElementById("finishRun");
+  const status = document.getElementById("liveStatus");
+  if (start) start.disabled = gpsTracking;
+  if (finish) finish.disabled = !gpsTracking;
+  if (status) status.textContent = gpsTracking ? t("liveRecording") : t("liveReady");
 }
 
 /* Znacznik bieżącej pozycji użytkownika aktualizowany w trakcie nagrywania */
@@ -1954,12 +1992,14 @@ function updateGpsUserMarker(latlng) {
 /* Aktualizuje czas trwania treningu (w minutach) w kalkulatorze */
 function updateGpsElapsed() {
   if (!gpsStartedAt) return;
-  const elapsedMin = (Date.now() - gpsStartedAt) / 60000;
-  const timeEl = document.getElementById("calcTime");
-  if (timeEl) {
-    timeEl.value = elapsedMin.toFixed(2);
-  }
-  renderCalc();
+  const elapsed = Date.now() - gpsStartedAt;
+  const totalSeconds = Math.floor(elapsed / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const time = document.getElementById("liveTime");
+  if (time) time.textContent = `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
+  updateMapDistance();
 }
 
 function startGpsTicker() {
@@ -2037,10 +2077,6 @@ function startGpsTracking() {
     gpsUserMarker = null;
   }
 
-  // Wyzeruj czas w kalkulatorze na czas nagrywania
-  const timeEl = document.getElementById("calcTime");
-  if (timeEl) timeEl.value = "0";
-
   updateGpsButton();
   startGpsTicker();
 
@@ -2063,7 +2099,7 @@ function stopGpsTracking(silent) {
   }
   stopGpsTicker();
 
-  // Finalny czas i dystans do kalkulatora
+  // Finalny czas i dystans przed zapisem
   updateGpsElapsed();
 
   // Linia trasy: zmień kolor na "zakończoną"
@@ -2076,35 +2112,83 @@ function stopGpsTracking(silent) {
   const km = routeDistance();
   const timeMin = gpsStartedAt ? (Date.now() - gpsStartedAt) / 60000 : 0;
 
-  // Zapisz ślad tylko jeśli mamy realną trasę
-  if (routePoints.length >= 2 && km >= 0.01) {
-    const s = computeStats();
+  // Jawne zakończenie zapisuje także bardzo krótki bieg z jednym punktem GPS.
+  if (!silent && gpsStartedAt) {
     const entry = {
       id: Date.now(),
       date: new Date().toISOString(),
-      activity: s.activity,
-      weight: s.weight,
       distance: Number(km.toFixed(2)),
       timeMin: Number(timeMin.toFixed(1)),
-      pace: s.pace,
-      speed: Number(s.speed.toFixed(1)),
-      calories: s.calories,
       gps: true,
       track: routePoints.slice(),
     };
-    savedRoutes.unshift(entry);
-    saveRoutes();
-    renderSaved();
-    if (!silent) alert(t("mapRecordDone"));
+    saveRun(entry);
   }
 
   gpsStartedAt = 0;
+  if (!gpsTracking) {
+    document.getElementById("liveTime").textContent = "00:00:00";
+    updateMapDistance();
+  }
 }
 
 /* Przełącznik przycisku nagrywania */
 function toggleGpsRecording() {
   if (gpsTracking) stopGpsTracking(false);
   else startGpsTracking();
+}
+
+function saveRun(entry) {
+  savedRoutes.unshift(entry);
+  saveRoutes();
+  renderRunHistory();
+  const runs = window.BiegStartRuns;
+  if (runs && typeof runs.add === "function") runs.add(entry).catch((error) => console.warn("Nie udało się zapisać biegu:", error));
+  switchTab("dashboard");
+}
+
+function renderRunHistory() {
+  const box = document.getElementById("runHistory");
+  if (!box) return;
+  if (!savedRoutes.length) {
+    box.innerHTML = `<p class="history-empty">${t("historyEmpty")}</p>`;
+    return;
+  }
+  box.innerHTML = savedRoutes.map((run) => {
+    const date = new Date(run.date).toLocaleDateString(localeTag(), { day: "numeric", month: "short", year: "numeric" });
+    const pace = run.distance && run.timeMin ? formatLivePace(run.distance, run.timeMin * 60000) : "--:--";
+    return `<article class="history-item"><div><strong>${Number(run.distance || 0).toFixed(2)} km</strong><span>${date}</span></div><div><strong>${formatRunMinutes(run.timeMin)}</strong><span>${pace}</span></div></article>`;
+  }).join("");
+}
+
+function listenToRunHistory(user) {
+  if (typeof stopRunHistoryListener === "function") stopRunHistoryListener();
+  stopRunHistoryListener = null;
+  const runs = window.BiegStartRuns;
+  if (!user || user.isGuest || !runs || typeof runs.listen !== "function") {
+    renderRunHistory();
+    return;
+  }
+  stopRunHistoryListener = runs.listen(user.id, (items) => {
+    savedRoutes = items.sort((a, b) => new Date(b.date) - new Date(a.date));
+    renderRunHistory();
+  }, (error) => console.warn("Nie udało się pobrać historii biegów:", error));
+}
+
+function formatRunMinutes(minutes) {
+  if (!Number.isFinite(Number(minutes))) return "--";
+  const total = Math.round(Number(minutes));
+  return `${Math.floor(total / 60) ? `${Math.floor(total / 60)} h ` : ""}${total % 60} min`;
+}
+
+function addManualRun(event) {
+  event.preventDefault();
+  const distance = Number(document.getElementById("manualDistance").value);
+  const timeMin = Number(document.getElementById("manualMinutes").value);
+  const date = document.getElementById("manualDate").value;
+  if (!distance || !timeMin || !date) return;
+  saveRun({ id: Date.now(), date: new Date(`${date}T12:00:00`).toISOString(), distance, timeMin, gps: false });
+  event.target.reset();
 }
 
 /* ---------- ZAPISANE WYNIKI (per użytkownik) ---------- */
@@ -2279,9 +2363,7 @@ function renderAll() {
   renderPlan();
   renderDetails();
   renderQuote();
-  renderTimer();
-  renderCalc();
-  renderSaved();
+  renderRunHistory();
   renderGuide();
   renderBadges();
   updateGpsButton();
@@ -2403,29 +2485,9 @@ function bindEvents() {
     switchTab(btn.dataset.tab);
   });
 
-  // Stoper
-  document.getElementById("timerStart").addEventListener("click", timerStart);
-  document.getElementById("timerPause").addEventListener("click", timerPause);
-  document.getElementById("timerReset").addEventListener("click", timerReset);
-  document.getElementById("timerLoadPlan").addEventListener("click", loadFromSelectedWorkout);
-
-  // Reczna zmiana czasow (po zatwierdzeniu pola)
-  ["cfgWalk", "cfgRun", "cfgRounds"].forEach((id) => {
-    document.getElementById(id).addEventListener("change", applyTimerConfig);
-  });
-
-  // Kalkulator - aktualizacja na zywo
-  ["calcWeight", "calcDistance", "calcTime"].forEach((id) => {
-    const el = document.getElementById(id);
-    el.addEventListener("input", renderCalc);
-    el.addEventListener("change", renderCalc);
-  });
-
-  document.getElementById("calcSave").addEventListener("click", saveCurrentResult);
-  document.getElementById("savedClear").addEventListener("click", clearSaved);
-  document.getElementById("mapClear").addEventListener("click", clearRoute);
-  document.getElementById("mapLocate").addEventListener("click", locateUser);
-  document.getElementById("mapRecord").addEventListener("click", toggleGpsRecording);
+  document.getElementById("startRun").addEventListener("click", startGpsTracking);
+  document.getElementById("finishRun").addEventListener("click", () => stopGpsTracking(false));
+  document.getElementById("manualRunForm").addEventListener("submit", addManualRun);
 
   // Przelacznik motywu
   document.getElementById("themeToggle").addEventListener("click", toggleTheme);
@@ -2507,6 +2569,8 @@ function renderProfileBar(user) {
    natychmiast z localStorage. */
 async function applyProfileForUser(user) {
   if (!user) {
+    if (typeof stopRunHistoryListener === "function") stopRunHistoryListener();
+    stopRunHistoryListener = null;
     state = emptyState();
     savedRoutes = [];
     selectedIndex = null;
@@ -2529,6 +2593,7 @@ async function applyProfileForUser(user) {
   renderHeaderAuthLinks(user);
   loadState();
   loadRoutes();
+  listenToRunHistory(user);
   selectedIndex = nextIndex();
   if (selectedIndex === -1) selectedIndex = null;
   renderAll();
@@ -2542,7 +2607,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   loadTheme();
   applyTheme();
   bindEvents();
-  timerReset();
   initMap();
 
   const auth = authService();

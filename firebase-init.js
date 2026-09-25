@@ -101,6 +101,7 @@
       app,
     };
     global.__firebase = fb;
+    global.BiegStartRuns = global.createFirestoreRunsAdapter(fb);
 
     // 1) Podmiana adapterów: konta → Firebase Auth, dane → Firestore
     global.BiegStartAuth.configure({

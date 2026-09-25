@@ -313,7 +313,31 @@
     };
   }
 
+  function createFirestoreRunsAdapter(fb) {
+    const { db, fbStore } = fb || {};
+    const { addDoc, collection, onSnapshot, orderBy, query, where } = fbStore || {};
+    if (!db || typeof addDoc !== "function" || typeof collection !== "function") return null;
+
+    return {
+      async add(uid, run) {
+        const ref = collection(db, "biegnie");
+        await addDoc(ref, { ...run, uid, createdAt: new Date().toISOString() });
+      },
+      listen(uid, onRuns, onError) {
+        const ref = collection(db, "biegnie");
+        const constraints = [where("uid", "==", uid)];
+        if (typeof orderBy === "function") constraints.push(orderBy("date", "desc"));
+        const source = typeof query === "function" ? query(ref, ...constraints) : ref;
+        return onSnapshot(source, (snapshot) => {
+          const runs = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+          onRuns(runs);
+        }, onError);
+      },
+    };
+  }
+
   global.createFirebaseAuthAdapter = createFirebaseAuthAdapter;
   global.createFirestoreDataAdapter = createFirestoreDataAdapter;
+  global.createFirestoreRunsAdapter = createFirestoreRunsAdapter;
   global.mapFirebaseUser = mapFirebaseUser;
 })(window);
